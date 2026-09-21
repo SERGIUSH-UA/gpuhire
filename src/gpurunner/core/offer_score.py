@@ -30,6 +30,7 @@ from gpurunner.core.htr_sizing import (
     GB_PER_SHARD,
     MIN_CORES_PER_SHARD,
     Sizing,
+    gb_per_shard_for,
     plan_sizing,
     predict_cost,
     predict_hours,
@@ -122,6 +123,20 @@ class Need:
     time_value_usd_per_hour: float | None = None
     #: Стеля вартості тисячі сторінок, $. `None` = дефолт модуля.
     max_usd_per_1000_pages: float | None = None
+    #: 🔴 ПІДЛОГА ТЕМПУ, стор/год: нижче неї машина не береться взагалі.
+    #:
+    #: Окремий поріг від стелі ціни, бо вони про різне. `max_usd_per_1000`
+    #: пропускає скільки завгодно повільну машину, аби дешеву: 6-ядерна
+    #: TITAN X за $0.051/год дає $0.234 за тисячу сторінок і проходить будь-яку
+    #: стелю ціни — при 218 стор/год, тобто 3.7 години на чергу, яку
+    #: 32-ядерна машина читає за 27 хвилин.
+    #:
+    #: 🔴 Тірами НЕ послаблюється, як бюджет і строк: сенс підлоги саме в
+    #: тому, щоб порожній ринок не перетворювався на згоду взяти будь-що.
+    #: Замість цього наглядач чекає ринку (`wait_for_cores_min`) і, якщо не
+    #: дочекався, закінчує захід чесним `market_empty`.
+    #: 0 = підлоги немає (стара поведінка).
+    min_pages_per_hour: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -267,6 +282,62 @@ offer_reliability = _reliability
 # ---- скоринг ---------------------------------------------------------------
 
 
+def measured_pph_for(
+    measured: dict[str, Any] | None,
+    need: Need,
+    *,
+    cores: float,
+    vram_gb: float,
+    num_gpus: int,
+) -> float:
+    """Виміряний темп машини, ПЕРЕРАХОВАНИЙ на умови цього оффера й цієї черги.
+
+    🔴🔴 Замір б'є модель лише там, де умови ті самі. Реєстр пам'ятає темп по
+    `machine_id`, а машина продає кілька офферів: у 140182 їх два — 12-ядерний
+    і 6-ядерний, на тій самій карті. 21.09.2026 замір 918 стор/год, зроблений
+    на 12 ядрах і на метриках (66 рядків на сторінку), приписався 6-ядерному
+    офферу під протоколи консисторії (138 рядків) — і той виграв скор у
+    машини, що була вдвічі швидшою. Захід отримав 1513 стор/год там, де ринок
+    давав 16-, 28- і 32-ядерні машини за ті самі гроші.
+
+    Тому замір масштабується відношенням МОДЕЛЬНИХ темпів «тоді» і «тепер».
+    Там, де умови збігаються, відношення дорівнює одиниці й замір іде як є —
+    тобто стара поведінка зберігається рівно там, де вона була правильною.
+
+    Умови заміру беруться з того ж `measured`, що й сам темп: `cores_quota`
+    (наша частка ядер), `vram_total_gb`, `n_gpus`, `pages_per_hour_mpx`
+    (площа кадру) і `pages_per_hour_lines` (щільність рядків). Бракує
+    будь-чого з них — масштабувати нічим, і замір застосовується як є: так
+    само, як до появи цих полів у реєстрі.
+    """
+    if not measured:
+        return 0.0
+    pph = float(measured.get("pages_per_hour") or 0)
+    if pph <= 0:
+        return 0.0
+    then_cores = float(measured.get("cores_quota") or measured.get("cores") or 0)
+    then_vram = float(measured.get("vram_total_gb") or 0)
+    then_mpx = float(measured.get("pages_per_hour_mpx") or 0)
+    then_lines = float(measured.get("pages_per_hour_lines") or 0)
+    then_gpus = int(float(measured.get("n_gpus") or 1) or 1)
+    if not (then_cores > 0 and then_vram > 0 and then_mpx > 0 and then_lines > 0):
+        return pph
+    then = plan_sizing(
+        cores=then_cores, vram_gb=then_vram,
+        gb_per_shard=gb_per_shard_for(then_mpx), num_gpus=then_gpus,
+        lines_per_page=then_lines,
+        cores_per_shard=need.cores_per_shard or MIN_CORES_PER_SHARD,
+    )
+    now = plan_sizing(
+        cores=cores, vram_gb=vram_gb, gb_per_shard=need.gb_per_shard,
+        num_gpus=num_gpus, lines_per_page=need.lines_per_page,
+        cores_per_shard=need.cores_per_shard or MIN_CORES_PER_SHARD,
+    )
+    if then.pages_per_hour <= 0 or now.pages_per_hour <= 0:
+        return pph
+    return pph * (now.pages_per_hour / then.pages_per_hour)
+
+
 def score_offer(
     offer: dict[str, Any],
     need: Need,
@@ -285,7 +356,10 @@ def score_offer(
     # не знає ні реального розподілу ядер (V100 із 128 ядрами віддала нам 32),
     # ні щільності конкретної справи. Доти реєстр пам'ятав темп, показував
     # його в поясненні — і НЕ використовував у розрахунку.
-    measured_pph = float((verdict.best_measured or {}).get("pages_per_hour") or 0)         if verdict is not None else 0.0
+    measured_pph = measured_pph_for(
+        verdict.best_measured if verdict is not None else None, need,
+        cores=cores, vram_gb=vram, num_gpus=int(_num(offer, "num_gpus", 1.0) or 1),
+    )
     if measured_pph > 0:
         sizing = replace(sizing, pages_per_hour=measured_pph)
     hours = predict_hours(need.pages, sizing, warm=need.warm)
@@ -313,6 +387,16 @@ def score_offer(
         rejects.append(f"${cost:.2f} > ${need.budget_usd * tier.cost_frac:.2f}")
     if need.max_cost_per_case is not None and cost > need.max_cost_per_case:
         rejects.append(f"${cost:.2f} > стелі справи ${need.max_cost_per_case:.2f}")
+    # 🔴 Підлога темпу — ПЕРЕД стелею ціни, бо це різні питання: дешева
+    # повільна машина проходить будь-яку стелю ціни й забирає в заходу години.
+    # Тірами не послаблюється (див. `Need.min_pages_per_hour`).
+    if (need.min_pages_per_hour > 0 and sizing.usable
+            and sizing.pages_per_hour < need.min_pages_per_hour):
+        rejects.append(
+            f"{sizing.pages_per_hour:.0f} стор/год < підлоги "
+            f"{need.min_pages_per_hour:.0f} ({sizing.shards} шардів, "
+            f"{cores:.0f} ядер)"
+        )
     # 🔴 Головний поріг: скільки коштує тисяча сторінок саме на цій машині.
     # Рахується з ЧИСТОЇ швидкості, без накладних на підйом — інакше дрібна
     # справа відкидала б будь-яку машину.

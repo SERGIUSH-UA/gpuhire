@@ -652,3 +652,72 @@ def test_an_inflated_tail_no_longer_forecasts_a_false_budget_stop() -> None:
 
     assert honest.projected_total_usd() < blind.projected_total_usd()
     assert honest.projected_total_usd() < 0.60
+
+
+# ---- 21.09.2026: захід спинився за темпом, якого в нього не було ------------
+
+
+def _spr_203b_progress(**kw) -> dict:
+    """Знімок того самого тіку, на якому наглядач погасив здоровий бокс.
+
+    96 сторінок за 932.8 с — це 371 стор/год «у середньому», разом зі стартом
+    семи процесів і завантаженням ваг. Регулятор у тому ж знімку міряв сталий
+    хід: `rates {"7": 758}`.
+    """
+    base = {
+        "phase": "running", "n_pages_expected": 217, "pages_done": 96,
+        "pages_per_hour": 371, "wall_sec": 932.8, "missing_count": 121,
+        "case_index": 1, "cases_total": 5,
+        "regulator": {"active": 7, "rates": {"7": 758}},
+    }
+    base.update(kw)
+    return base
+
+
+def _queue_obs(**kw) -> Obs:
+    """Черга з п'яти справ: 812 сторінок, $0.256/год, витрачено $0.0785."""
+    return Obs(
+        progress=_spr_203b_progress(), spent_usd=0.0785, dph=0.25611,
+        queue_pages_total=812, queue_pages_before=0, **kw,
+    )
+
+
+def test_projection_uses_the_steady_rate_not_the_warmup() -> None:
+    """🔴🔴 Розгін не є темпом, і прогноз на ньому будувати не можна.
+
+    За середніми 371 стор/год виходило $0.57 при бюджеті $0.50 — бокс
+    погасили. Перезапуск на ТІЙ САМІЙ машині прочитав усю чергу за 32
+    хвилини і $0.151.
+    """
+    obs = _queue_obs()
+    assert obs.steady_pages_per_hour == 758
+    naive = obs.spent_usd + (obs.pages_left / 371) * obs.dph
+    assert naive > 0.50          # так рахували — і гасили
+    assert obs.projected_total_usd() < 0.50
+
+
+def test_projection_still_counts_the_warmup_of_cases_ahead() -> None:
+    """Розгін не зникає з прогнозу — він переїжджає туди, де справді буде.
+
+    Кожна наступна справа черги заплатить старт флоту й качання кадрів знову,
+    тож прогноз мусить додати його стільки разів, скільки справ попереду, а
+    не розмазати розгін першої справи на всі 812 сторінок.
+    """
+    obs = _queue_obs()
+    assert obs.case_overhead_sec > 300          # ~477 с на цьому заході
+    bare = obs.spent_usd + (obs.pages_left / 758) * obs.dph
+    assert obs.projected_total_usd() > bare
+
+
+def test_healthy_box_is_not_killed_by_the_budget_rule() -> None:
+    """Той самий знімок — і наглядач більше не гасить бокс."""
+    action, _ = decide(_queue_obs(), CFG)
+    assert action != "destroy_budget"
+
+
+def test_without_regulator_the_old_average_still_works() -> None:
+    """Старий раннер не публікує `rates` — там усе як було."""
+    obs = Obs(progress=_spr_203b_progress(regulator=None),
+              spent_usd=2.00, dph=0.50, queue_pages_total=812)
+    assert obs.steady_pages_per_hour == 0
+    assert obs.projected_total_usd() > obs.spent_usd

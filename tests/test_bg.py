@@ -87,6 +87,6 @@ def test_start_writes_a_hidden_self_deleting_task(monkeypatch: pytest.MonkeyPatc
             if ln.strip()]
     assert body[1].startswith("schtasks /delete /f /tn")
     assert "bg _run fs-11900" in body[-1] and '"dl one.ps1"' in body[-1]
-    launcher = (bg.bg_dir() / "fs-11900.vbs").read_text(encoding="ascii")
+    launcher = (bg.bg_dir() / "fs-11900.vbs").read_text(encoding="utf-16")
     assert launcher.rstrip().endswith(", 0, False")
     assert calls[0][:2] == ["schtasks", "/create"] and calls[1][:2] == ["schtasks", "/run"]

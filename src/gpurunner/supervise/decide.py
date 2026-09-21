@@ -196,6 +196,22 @@ class Obs:
     queue_pages_before: int = 0
 
     @property
+    def cases_left(self) -> int:
+        """Скільки справ черги ще попереду, рахуючи поточну як пройдену.
+
+        Потрібно рівно для одного: розгін (старт шардів, ваги, качання кадрів)
+        повторюється на КОЖНІЙ справі, і прогноз мусить його додати стільки
+        разів, скільки їх лишилось.
+        """
+        p = self.progress or {}
+        try:
+            total = int(p.get("cases_total") or 1)
+            index = int(p.get("case_index") or 1)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, total - index)
+
+    @property
     def pages_skipped(self) -> int:
         return int((self.progress or {}).get("pages_skipped") or 0)
 
@@ -354,16 +370,75 @@ class Obs:
         p = self.progress or {}
         return int(p.get("missing_count") or len(p.get("missing") or []))
 
+    @property
+    def steady_pages_per_hour(self) -> float:
+        """Темп СТАЛОГО ходу: замір флоту у вікні, без розгону в знаменнику.
+
+        🔴🔴 `pages_per_hour` раннера — це сторінки ÷ увесь час від старту
+        шардів, тобто разом зі стартом семи процесів, завантаженням ваг і
+        прогрівом. Регулятор поруч міряє інше: темп у вікні, яке відкривається
+        після заспокоєння флоту (`rates {n: стор/год}` для поточного числа
+        шардів). Обидва числа лежать в одному прогресі й розходяться вдвічі.
+
+        21.09.2026 бюджетна гілка взяла гірше з двох: «за виміряним темпом
+        (371 стор/год) вийде $0.57 при бюджеті $0.50» — при `rates {"7": 758}`
+        у тому ж файлі. Захід спинився, а перезапуск на ТІЙ САМІЙ машині
+        прочитав усю чергу за 32 хвилини і $0.151.
+
+        Нуль — вікно ще не дозріло або флот щойно змінив число шардів.
+        """
+        reg = (self.progress or {}).get("regulator") or {}
+        rates = reg.get("rates") or {}
+        active = reg.get("active")
+        if not rates or not active:
+            return 0.0
+        try:
+            return float(rates.get(str(int(active))) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def case_overhead_sec(self) -> float:
+        """Скільки секунд цієї справи пішло НЕ в читання, за фактом.
+
+        Різниця між стінним часом шардів і тим, що пояснює сталий темп:
+        качання архіву кадрів, розпакування, старт процесів, завантаження
+        ваг. Кожна наступна справа черги заплатить це знову, тож прогноз без
+        цього доданка занижує час — і рівно настільки, наскільки сталий темп
+        вищий за середній.
+        """
+        steady = self.steady_pages_per_hour
+        if steady <= 0 or self.work_sec <= 0:
+            return 0.0
+        read_sec = 3600.0 * self.pages_done / steady
+        return max(0.0, self.work_sec - read_sec)
+
     def projected_total_usd(self) -> float:
         """Скільки вийде разом, якщо темп збережеться.
 
-        🔴 Темп береться ВИМІРЯНИЙ (`pages_per_hour` із живого прогресу), а не
-        прогнозований при виборі оффера. Прогноз уже один раз збрехав — саме
-        він дозволив узяти машину, що не встигала.
+        🔴 Темп береться ВИМІРЯНИЙ (із живого прогресу), а не прогнозований
+        при виборі оффера. Прогноз уже один раз збрехав — саме він дозволив
+        узяти машину, що не встигала.
+
+        🔴🔴 Але вимірів два, і вони про різне: сталий хід (`rates` флоту)
+        показує, як швидко читається сторінка, а розгін (старт шардів, ваги,
+        качання наступної справи) повторюється на КОЖНІЙ справі черги. Тому
+        прогноз складається з обох: сторінки ділимо на сталий темп, а розгін
+        додаємо стільки разів, скільки справ іще попереду. Середній темп
+        робив те саме одним множенням — і тим розмазував розгін першої справи
+        на всю чергу, завищуючи прогноз удвічі (21.09.2026, $0.57 проти
+        фактичних $0.151).
         """
-        if self.pages_left <= 0 or self.pages_per_hour <= 0 or self.dph <= 0:
+        if self.pages_left <= 0 or self.dph <= 0:
             return self.spent_usd
-        hours_left = self.pages_left / self.pages_per_hour
+        steady = self.steady_pages_per_hour
+        if steady > 0:
+            hours_left = self.pages_left / steady
+            hours_left += self.case_overhead_sec * self.cases_left / 3600.0
+        elif self.pages_per_hour > 0:
+            hours_left = self.pages_left / self.pages_per_hour
+        else:
+            return self.spent_usd
         return self.spent_usd + hours_left * self.dph
 
 

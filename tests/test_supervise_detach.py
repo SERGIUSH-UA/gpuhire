@@ -64,7 +64,7 @@ def test_spawn_creates_a_one_shot_task_and_runs_it(monkeypatch) -> None:
     # `cmd` тримав би чорну консоль відкритою на весь захід, тобто години.
     # Штатний `/ru … /np` тут заборонено політикою (перевірено 04.09.2026),
     # тому вікно ховає стиль 0 у пускачі WSH.
-    launcher = detach._launcher_path("htr-x").read_text(encoding="ascii")
+    launcher = detach._launcher_path("htr-x").read_text(encoding="utf-16")
     assert launcher.rstrip().endswith(", 0, False")
     assert "htr-x.cmd" in launcher
 

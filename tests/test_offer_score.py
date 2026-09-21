@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -454,3 +455,86 @@ def test_a_starred_machine_far_behind_does_not_jump_the_queue() -> None:
     order = stars_first(_ranked((1, 100.0, None), (2, 50.0, "starred")))
     assert [c.machine_id for c in order] == [1, 2]
     assert stars_first([]) == []
+
+
+# ---- 21.09.2026: захід узяв 6-ядерну машину, маючи на ринку 32-ядерні -------
+
+
+def _titan_x_6_cores() -> dict:
+    """Другий оффер машини 140182: та сама карта, удвічі менше ядер."""
+    return offer(id=51832512, machine_id=140182, gpu="GTX TITAN X",
+                 cores=6, vram_gb=12, dph=0.051)
+
+
+#: Замір, який реєстр зберіг для машини 140182: зроблений на ДВАНАДЦЯТИ ядрах
+#: і на метриках (66 рядків на сторінку, кадри 19 Мпікс).
+_MEASURED_ON_12_CORES = {
+    "pages_per_hour": 918, "cores_quota": 11.52, "vram_total_gb": 24.0,
+    "n_gpus": 2.0, "pages_per_hour_mpx": 18.96, "pages_per_hour_lines": 66.0,
+}
+
+#: Черга протоколів консисторії: 812 сторінок, 138.5 рядків, кадри 23 Мпікс.
+_HEAVY = Need(pages=812, max_hours=8.0, budget_usd=1.2, gb_per_shard=4.53,
+              lines_per_page=138.5, max_usd_per_1000_pages=0.55)
+
+
+def test_measured_throughput_is_rescaled_to_this_offer() -> None:
+    """🔴🔴 Замір реєстру лежить на МАШИНІ, а машина продає кілька офферів.
+
+    21.09.2026 у 140182 їх було два — 12-ядерний і 6-ядерний, на тій самій
+    карті. Темп 918 стор/год, виміряний на 12 ядрах і на вдвічі рідших
+    рядках, приписався 6-ядерному офферу під удвічі щільніший матеріал: той
+    виграв скор і читав чергу зі швидкістю, якої в нього немає.
+    """
+    from gpurunner.core.boxes import BoxVerdict
+
+    star = BoxVerdict(machine_id=140182, state="starred", reason="2 успішних",
+                      best_measured=_MEASURED_ON_12_CORES)
+    scored = score_offer(_titan_x_6_cores(), _HEAVY, star, tier=TIERS[3])
+    assert scored.sizing.pages_per_hour < 400, scored.explain
+    # Модель без заміру дала б приблизно те саме — замір не має робити машину
+    # швидшою за те, на що вистачає її ядер і VRAM.
+    plain = score_offer(_titan_x_6_cores(), _HEAVY, tier=TIERS[3])
+    assert scored.sizing.pages_per_hour < plain.sizing.pages_per_hour * 1.5
+
+
+def test_measured_throughput_still_beats_model_on_same_conditions() -> None:
+    """А там, де умови ті самі, замір як був головнішим за модель, так і лишився."""
+    from gpurunner.core.boxes import BoxVerdict
+
+    same = dict(_MEASURED_ON_12_CORES, cores_quota=6.0, vram_total_gb=12.0,
+                n_gpus=1.0, pages_per_hour_mpx=23.0, pages_per_hour_lines=138.5)
+    verdict = BoxVerdict(machine_id=140182, state="starred", reason="2 успішних",
+                         best_measured=same)
+    scored = score_offer(_titan_x_6_cores(), _HEAVY, verdict, tier=TIERS[3])
+    assert scored.sizing.pages_per_hour == pytest.approx(918, rel=0.02)
+
+
+def test_slow_cheap_box_is_rejected_by_the_pph_floor() -> None:
+    """Підлога темпу — окремий поріг від стелі ціни, і саме вона ловить цей клас.
+
+    6-ядерна TITAN X дає $0.234 за тисячу сторінок: усередині будь-якої
+    розумної стелі ціни. І 218 стор/год, тобто 3.7 години на чергу, яку
+    32-ядерна машина читає за півгодини.
+    """
+    need = replace(_HEAVY, min_pages_per_hour=1000)
+    scored = score_offer(_titan_x_6_cores(), need, tier=TIERS[3])
+    assert not scored.ok
+    assert any("підлоги" in r for r in scored.rejects), scored.rejects
+
+
+def test_pph_floor_is_not_relaxed_by_tiers() -> None:
+    """Порожній ринок не є підставою взяти машину, повільнішу за підлогу."""
+    need = replace(_HEAVY, min_pages_per_hour=1000)
+    for tier in TIERS:
+        assert not score_offer(_titan_x_6_cores(), need, tier=tier).ok
+
+
+def test_fat_box_passes_the_floor() -> None:
+    """І та сама підлога пропускає машину, яка ринку справді варта."""
+    need = replace(_HEAVY, min_pages_per_hour=1000)
+    fat = offer(id=5139, machine_id=151, gpu="RTX 3090", cores=32,
+                vram_gb=48, dph=0.33, num_gpus=2)
+    scored = score_offer(fat, need)
+    assert scored.ok, scored.rejects
+    assert scored.sizing.pages_per_hour > 1000

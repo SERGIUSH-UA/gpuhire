@@ -135,6 +135,13 @@ class Plan:
     time_value_usd_per_hour: float | None = None
     #: Стеля вартості тисячі сторінок — головний поріг вибору машини.
     max_usd_per_1000_pages: float | None = None
+    #: 🔴 ПІДЛОГА ТЕМПУ, стор/год. Стеля ціни пропускає скільки завгодно
+    #: повільну машину, аби дешеву, і 21.09.2026 так і сталось: 6-ядерна
+    #: TITAN X за $0.051/год проходила всі пороги при 218 стор/год. Ця ручка
+    #: відповідає на інше питання — скільки заход ГОТОВИЙ ЧЕКАТИ. Тірами не
+    #: послаблюється: порожній ринок має давати `market_empty`, а не згоду
+    #: взяти будь-що. 0 = підлоги немає.
+    min_pages_per_hour: float = 0.0
     max_attempts: int = 4
     #: 🔴 Скільки разів захід узагалі може взяти бокс. Не плутати з
     #: `max_attempts` — та стеля діє на ОДИН пошук кандидатів, а ця на весь
@@ -183,7 +190,7 @@ _KNOWN_TOP_KEYS = frozenset({
     "assets_url", "cases", "gpu", "budget_usd", "max_hours", "disk_gb",
     "autodestroy_hours", "prefer_min_cores", "wait_for_cores_min", "min_net_mbps",
     "num_gpus", "max_price", "max_cost_per_case", "time_value_usd_per_hour",
-    "max_usd_per_1000_pages", "max_attempts", "max_rents", "gb_per_shard",
+    "max_usd_per_1000_pages", "min_pages_per_hour", "max_attempts", "max_rents", "gb_per_shard",
     "vram_gb_per_shard", "shards", "catchup_passes", "params",
     "keep_warm_min", "scripts_sha256", "post_fetch",
 })
@@ -384,6 +391,7 @@ def load_plan(path: str | Path) -> Plan:
                                  if raw.get("time_value_usd_per_hour") is not None else None),
         max_usd_per_1000_pages=(float(raw["max_usd_per_1000_pages"])
                                 if raw.get("max_usd_per_1000_pages") is not None else None),
+        min_pages_per_hour=float(raw.get("min_pages_per_hour") or 0),
         max_attempts=int(raw.get("max_attempts") or 4),
         max_rents=int(raw.get("max_rents") or 3),
         # 🔴🔴 Два імені однієї ручки. У `-p` вона зветься `vram_gb_per_shard`

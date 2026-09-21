@@ -159,9 +159,15 @@ def schedule_hidden(name: str, script: Path, lines: list[str]) -> None:
     # запускає крихітний скрипт WSH, а той стартує наш `cmd` зі стилем вікна 0.
     # Прав не треба, вікна немає, процес переживає і сам скрипт, і сесію.
     launcher = script.with_suffix(".vbs")
+    # 🔴 UTF-16, а не ASCII. У шлях скрипта входить ІМ'Я СПРАВИ, а наші справи
+    # звуться `spr-47а` і `spr-84г` — з українськими літерами. На ASCII такий
+    # запис падає `UnicodeEncodeError` ще до планувальника: захід не стартує
+    # взагалі, а на диску лишається порожній `.vbs` — 21.09.2026 так тихо
+    # загинув `htr-spr-84г-q2-0921-0048` (0 байт), а потім і `spr-47а`.
+    # WSH читає VBS у UTF-16 за BOM — перевірено живим запуском.
     launcher.write_text(
         f'CreateObject("WScript.Shell").Run """{script}""", 0, False\r\n',
-        encoding="ascii")
+        encoding="utf-16")
 
     start_at = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M")
     subprocess.run(

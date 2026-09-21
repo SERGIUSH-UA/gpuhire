@@ -198,6 +198,8 @@ def need_from_plan(plan: Any, *, pages: int, max_hours: float | None = None,
         max_cost_per_case=plan_knob(plan, "max_cost_per_case"),
         time_value_usd_per_hour=plan.time_value_usd_per_hour,
         max_usd_per_1000_pages=plan_knob(plan, "max_usd_per_1000_pages"),
+        # Підлога темпу: машина, повільніша за неї, не береться взагалі.
+        min_pages_per_hour=float(plan_knob(plan, "min_pages_per_hour") or 0.0),
         gb_per_shard=gb,
         frame_mpx=mpx,
         lines_per_page=lines,
@@ -426,6 +428,12 @@ class Supervisor:
             f"бюджет ${self.plan.budget_usd:.2f} · стеля {self.plan.max_hours:.1f} год · "
             f"оренд {self.plan.max_rents}"
         )
+        # 🔴 Підлога темпу мусить бути ВИДНА в рядку ручок. Ручка, яка мовчки
+        # діє, невідрізнима від ручки, яка мовчки НЕ діє: саме так
+        # `-p max_usd_per_1000_pages` два тижні не працював і не сказав ні слова.
+        floor_pph = float(plan_knob(self.plan, "min_pages_per_hour") or 0)
+        if floor_pph:
+            line += f" · не повільніше за {floor_pph:.0f} стор/год"
         bar = scaled_min_cores(float(self.plan.prefer_min_cores or 0), self.plan.total_pages)
         if bar:
             line += f" · ядер від {bar:.0f}"
