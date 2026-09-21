@@ -553,7 +553,16 @@ def select_offers(
                 f"${_dph(best.offer):.3f}/год · ${best.usd_per_1000:.3f} за 1000 стор.; "
                 f"у {best.slowdown_x:.2f}× повільніше за {against}"
             )
-        return Selection(candidates=candidates, tier=tier, rejected=[], reason=reason)
+        # 🔴 Відкинутих несемо й тоді, коли вибір ВІДБУВСЯ. Доти вони
+        # зберігались лише у вироку «ринок порожній», тож питання «скільки
+        # машин з'їла моя підлога і чи лишився запас» не мало відповіді доти,
+        # доки не ставало пізно. Беремо найм'якший тір: те, що не пройшло там,
+        # не пройшло ніде.
+        rejected = [c for c in (score_offer(o, need, verdicts.get(machine_id_of(o)),
+                                            tier=TIERS[-1]) for o in offers)
+                    if c.rejects]
+        return Selection(candidates=candidates, tier=tier, rejected=rejected,
+                         reason=reason)
 
     for tier in TIERS:
         candidates = rank_offers(offers, need, verdicts, tier=tier)

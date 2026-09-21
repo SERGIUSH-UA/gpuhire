@@ -27,6 +27,13 @@ from gpurunner.core.models import JobHandle
 # ---------------------------------------------------------------------------
 
 
+#: Мінорна версія інтерпретатора, на якому йдуть тести. Бекенд Modal
+#: вимагає, щоб вона збігалася з версією образу, і матриця CI ганяє
+#: 3.11, 3.12 і 3.13 — зашите "3.12" робило два тести червоними на двох
+#: платформах із трьох.
+_LOCAL_PY = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
 def test_volume_name_is_under_modal_limit() -> None:
     # Modal volume names: ≤ 64 chars, lowercase alnum + hyphens.
     name = _volume_name_for("a" * 32)
@@ -297,6 +304,11 @@ def test_submit_passes_image_spec_timeout(monkeypatch: pytest.MonkeyPatch) -> No
         def modal_image_spec(self) -> dict[str, Any]:
             spec = super().modal_image_spec()
             spec["timeout"] = 14400
+            # 🔴 Образ просимо під ТОЙ ІНТЕРПРЕТАТОР, на якому біжить тест.
+            # Тест — про таймаут, а не про версію; із зашитою 3.12 він падав
+            # на 3.11 і 3.13 у матриці CI, бо бекенд законно відмовляє при
+            # розбіжності. Саму відмову перевіряє власний тест нижче.
+            spec["python_version"] = _LOCAL_PY
             return spec
 
     bk = ModalBackend()
@@ -369,6 +381,9 @@ def test_submit_default_timeout_when_spec_omits_it(monkeypatch: pytest.MonkeyPat
             return ""
         def render_runner_module(self) -> str:
             return "def main(p): return {}"
+        def modal_image_spec(self) -> dict[str, Any]:
+            # Див. коментар вище: версія образу — локальна, бо тест про таймаут.
+            return {**super().modal_image_spec(), "python_version": _LOCAL_PY}
 
     bk = ModalBackend()
     bk.submit(_MinimalJob(), {}, gpu="T4")

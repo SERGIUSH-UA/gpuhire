@@ -2080,6 +2080,7 @@ class Supervisor:
 
         if selection.tier.level > 0:
             self.state.note("degraded", selection.reason)
+        self._warn_pph_floor(selection, need)
 
         # 🔴 Дедуп по МАШИНІ, а не по офферу. 2026-08-11 дві спроби поспіль
         # пішли на ту саму machine 95392: `ssh_unreachable` має два удари до
@@ -2656,8 +2657,12 @@ class Supervisor:
         reasons: Counter = Counter()
         for rejected in getattr(selection, "rejected", []) or []:
             for why in getattr(rejected, "rejects", []) or []:
-                # «✗ 4.4 год > 3.0» → «стеля годин»; беремо перше слово-ознаку.
-                key = ("стеля годин" if "год" in why else
+                # 🔴 Підлога темпу перевіряється ПЕРШОЮ: її причина звучить
+                # «… стор/год < підлоги 1000», тобто містить «год» і без цього
+                # рядка класифікувалась як стеля ГОДИН — а порада «підніміть
+                # --max-hours» на ній не робить нічого взагалі.
+                key = ("підлога темпу" if "підлоги" in why else
+                       "стеля годин" if "год" in why else
                        "ціна" if "$" in why else
                        "диск" if "ГБ" in why and "диск" in why.lower() else
                        why.split(":")[0][:24])
@@ -2675,8 +2680,51 @@ class Supervisor:
             "ціна": "підняти `max_price` або `--max-usd-per-1000`",
             "диск": "опустити `disk_gb` у плані",
         }.get(top, "послабити вимоги (--max-hours / --budget) або прогнати локально")
+        if top == "підлога темпу":
+            # 🔴 Порада з ЧИСЛОМ: найшвидше, що ринок сьогодні дає на ЦЬОМУ
+            # матеріалі. Без нього людина знижує підлогу навмання, а тут вона
+            # одразу бачить, чи вона поставила недосяжне (на щільному
+            # матеріалі 2000 стор/год не дає жодна машина ринку), чи просто
+            # не пощастило з годиною.
+            best = max((float(getattr(r.sizing, "pages_per_hour", 0) or 0)
+                        for r in (getattr(selection, "rejected", []) or [])),
+                       default=0.0)
+            action = (
+                f"найшвидша машина ринку дає {best:.0f} стор/год на цьому "
+                f"матеріалі — опустити `--min-pph` під це число або чекати "
+                f"ринку; підлога тірами НЕ послаблюється, і це навмисно"
+                if best > 0 else
+                "опустити `--min-pph` або чекати ринку")
         return (f"{selection.reason or 'ринок не дав придатної машини'}; "
                 f"відсіяли ВЛАСНІ стелі: {detail}", action)
+
+    def _warn_pph_floor(self, selection: Any, need: Need) -> None:
+        """Сказати ВГОЛОС, скільки машин з'їла підлога темпу — поки вибір є.
+
+        🔴 Мовчазна ручка невідрізнима від зламаної. Підлога ріже тим сильніше,
+        чим щільніший матеріал: на метриках 1000 стор/год відсікає 4 машини з
+        78, на протоколах консисторії — 18 із 20 (заміряно на живому ринку
+        21.09.2026). Перше — запас, друге — лезо, і людина має бачити, на
+        якому вона боці, ДО того, як ринок просяде і захід стане.
+        """
+        floor = float(getattr(need, "min_pages_per_hour", 0) or 0)
+        if floor <= 0:
+            return
+        cut = sum(1 for r in (getattr(selection, "rejected", []) or [])
+                  if any("підлоги" in w for w in (getattr(r, "rejects", []) or [])))
+        if not cut:
+            return
+        left = len(getattr(selection, "candidates", []) or [])
+        хвіст = cut % 10
+        слово = ("машину" if хвіст == 1 and cut % 100 != 11 else
+                 "машини" if хвіст in (2, 3, 4) and cut % 100 not in (12, 13, 14)
+                 else "машин")
+        detail = f"підлога {floor:.0f} стор/год відсікла {cut} {слово}, лишилось {left}"
+        action = ("запас є" if left > 3 else
+                  "запасу майже немає: ще одна просадка ринку, і захід стане "
+                  "з `market_empty`. Тримати `--min-pph` нижче або чекати")
+        self.state.note("pph_floor", detail, action=action)
+        self._say(f"[supervise] ⚠ {detail} — {action}")
 
     def _with_deadline(self, call: Any, *, seconds: float, what: str) -> Any:
         """Виконати виклик зі стелею часу. Понад неї — `BackendError`.
