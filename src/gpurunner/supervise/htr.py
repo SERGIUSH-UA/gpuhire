@@ -176,6 +176,42 @@ def _fallback_out_root() -> Path:
     return data_dir() / "htr" / "out"
 
 
+#: Скільки місця лишаємо тексту помилки в повідомленні про впалу справу.
+ERR_LIMIT = 300
+
+
+def short_error(text: str, *, limit: int = ERR_LIMIT) -> str:
+    """Помилка справи так, щоб у неї влізла ПРИЧИНА, а не адреса.
+
+    🔴🔴 Обрізання з початку з'їдало рівно те, заради чого повідомлення й
+    існує. Помилка завантаження виглядає як `curl <presigned-URL> → rc=23`, а
+    підписане посилання R2 саме по собі довше за 400 символів: у ліміт 300
+    влізав шматок підпису й нічого більше. 21.09.2026 три справи поспіль
+    упали з однаковим «curl https://…X-Amz-SignedHeader», і причина не
+    збереглася НІДЕ — ні в стані, ні в журналі. Діагноз за таким рядком
+    ставиться навмання: перше, що спало на думку, — «посилання протухло»,
+    хоча в ньому ж написано `X-Amz-Expires=86400`, тобто доба.
+
+    Тому URL згортається до впізнаваного (`…/cases/spr-576.tar?…`), а те, що
+    лишилось, обрізається З СЕРЕДИНИ: початок і хвіст однаково потрібні, бо
+    причина буває і там, і там.
+    """
+    import re
+
+    def _fold(m: re.Match[str]) -> str:
+        url = m.group(0)
+        head, _, query = url.partition("?")
+        tail = head.rsplit("/", 1)[-1] or head
+        return f"…/{tail}?…" if query else f"…/{tail}"
+
+    text = re.sub(r"https?://\S+", _fold, str(text)).strip()
+    if len(text) <= limit:
+        return text
+    keep = limit - 3
+    head = keep * 2 // 3
+    return text[:head] + "…" + text[len(text) - (keep - head):]
+
+
 def need_from_plan(plan: Any, *, pages: int, max_hours: float | None = None,
                    budget_usd: float | None = None) -> Need:
     """Потреба заходу — ОДНА на всі входи.
@@ -1451,7 +1487,7 @@ class Supervisor:
                 cs.detail = f"на боксі повна: {n_txt} текстів, чекає забору"
                 continue
             attempt = int(r.get("attempt") or 1)
-            err = str(r.get("error") or "неповна").splitlines()[0][:300]
+            err = short_error(str(r.get("error") or "неповна").splitlines()[0])
             cs.status = "failed"
             cs.pages_done = max(cs.pages_done, n_txt)
             cs.detail = f"на боксі впала (спроба {attempt}): {err}"
