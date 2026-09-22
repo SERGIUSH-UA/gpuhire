@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="uk" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gpurunner — баланси</title>
+<!-- Іконка інлайном: інакше браузер щоразу стукає по /favicon.ico і ловить 404,
+     а сервер віддає лише те, що ми йому явно описали. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f1524'/%3E%3Crect x='7' y='18' width='4' height='8' rx='1.5' fill='%2320beff'/%3E%3Crect x='14' y='11' width='4' height='15' rx='1.5' fill='%2334d399'/%3E%3Crect x='21' y='6' width='4' height='20' rx='1.5' fill='%23f9ab00'/%3E%3C/svg%3E">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   Компоненти живуть тут, а не в Tailwind-класах, з двох причин:
+   1) Tailwind тягнеться з CDN, а дашборд мусить читатись і без мережі — його
+      сенс саме в тому, щоб показати кеш, коли провайдери недоступні;
+   2) шкали, спарклайни й акцентні смуги все одно потребують справжнього CSS.
+   Tailwind лишається на розкладку й відступи.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
+  --bg: #0a0e1a;
+  --panel: #0f1524;
+  --panel-2: #141b2d;
+  --line: #1f2937;
+  --line-soft: #172032;
+  --text: #e5e9f0;
+  --muted: #8492ad;
+  --dim: #5b6880;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #fb7185;
+  --accent: #38bdf8;
+}
+/* Кожен бекенд має свій колір — око знаходить рядок у стеку, легенді й картці
+   за кольором швидше, ніж читає підпис. Загальне правило мусить іти ПЕРШИМ:
+   специфічність у `[data-bk]` і `[data-bk="kaggle"]` однакова, тож перемагає
+   останнє — постав фолбек нижче, і всі бекенди стануть однаково блакитними. */
+[data-bk]             { --bk: var(--accent); }
+[data-bk="kaggle"]    { --bk: #20beff; }
+[data-bk="modal"]     { --bk: #7fee64; }
+[data-bk="colab"]     { --bk: #f9ab00; }
+[data-bk="vast"]      { --bk: #a78bfa; }
+[data-bk="lightning"] { --bk: #c084fc; }
+[data-bk="beam"]      { --bk: #f472b6; }
+[data-bk="saturn"]    { --bk: #2dd4bf; }
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, #16203a 0%, transparent 60%),
+    radial-gradient(900px 500px at 95% 0%, #1a1630 0%, transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 78rem; margin: 0 auto; padding: 1.25rem 1.25rem 4rem; }
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+a { color: inherit; }
+button, summary { cursor: pointer; }
+[hidden] { display: none !important; }
+
+/* ── панелі ── */
+.panel {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.panel-pad { padding: 1.1rem 1.25rem; }
+
+/* ── шапка ── */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  border-bottom: 1px solid var(--line-soft);
+}
+.brand { font-weight: 650; letter-spacing: -0.01em; }
+.brand span { color: var(--dim); font-weight: 400; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: .45rem;
+  padding: .42rem .8rem; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--text); font-size: .82rem;
+  transition: border-color .15s, background .15s, transform .06s;
+}
+.btn:hover { background: #1b2438; border-color: #2b3a55; }
+.btn:active { transform: translateY(1px); }
+.btn-primary { border-color: #1e4d63; background: #0e2c3b; color: #7dd3fc; }
+.btn-primary:hover { background: #123a4d; }
+.btn-ghost { border-color: transparent; background: transparent; color: var(--muted); }
+.btn-ghost:hover { background: var(--panel-2); color: var(--text); }
+.btn[disabled] { opacity: .5; pointer-events: none; }
+.kbd {
+  font-family: ui-monospace, monospace; font-size: .68rem;
+  padding: .05rem .3rem; border-radius: 4px;
+  border: 1px solid var(--line); background: #0b111e; color: var(--dim);
+}
+
+/* ── герой ── */
+.hero-num {
+  font-size: clamp(2.6rem, 7vw, 4.2rem); line-height: .95; font-weight: 680;
+  letter-spacing: -0.035em;
+  background: linear-gradient(100deg, #a7f3d0, #34d399 45%, #22d3ee);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.tile {
+  border: 1px solid var(--line-soft); border-radius: 11px;
+  background: #0d1322; padding: .6rem .75rem; min-width: 7.5rem;
+}
+.tile-k { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.tile-v { font-size: 1.28rem; font-weight: 620; letter-spacing: -0.02em; }
+
+/* Стек внесків: одразу видно, де саме лежать обчислення. */
+.stack { display: flex; height: 13px; border-radius: 7px; overflow: hidden; background: #0b1120; gap: 2px; }
+.stack i {
+  display: block; background: var(--bk); opacity: .85;
+  transition: opacity .15s, flex-basis .45s cubic-bezier(.4,0,.2,1);
+}
+.stack i:hover { opacity: 1; }
+.stack i.est { background: repeating-linear-gradient(135deg, var(--bk) 0 5px, color-mix(in srgb, var(--bk) 45%, #0b1120) 5px 10px); }
+.legend { display: flex; flex-wrap: wrap; gap: .35rem .95rem; font-size: .76rem; color: var(--muted); }
+.legend b { color: var(--text); font-weight: 600; }
+.dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--bk); display: inline-block; }
+
+/* ── картка сервісу ── */
+/* align-items:start — інакше картка з коротким вмістом розтягується до висоти
+   найвищої в рядку і показує півекрана порожнечі під однією цифрою. */
+.cards {
+  display: grid; gap: .9rem; align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
+}
+.card {
+  position: relative; overflow: hidden;
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--line); border-radius: 14px; padding: .95rem 1rem 1rem;
+  transition: border-color .18s, transform .18s;
+}
+.card::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--bk);
+}
+.card::after {
+  content: ""; position: absolute; inset: -40% -30% auto auto; width: 16rem; height: 10rem;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--bk) 16%, transparent), transparent);
+  pointer-events: none;
+}
+.card:hover { border-color: color-mix(in srgb, var(--bk) 35%, var(--line)); transform: translateY(-1px); }
+.card.off { opacity: .62; }
+.card-title { font-weight: 640; font-size: 1.02rem; letter-spacing: -0.01em; }
+.big { font-size: 2rem; font-weight: 660; letter-spacing: -0.03em; line-height: 1.1; }
+.big.none { color: var(--dim); }
+.unit { font-size: .95rem; color: var(--muted); font-weight: 400; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-size: .68rem; padding: .12rem .5rem; border-radius: 999px;
+  border: 1px solid currentColor; white-space: nowrap;
+}
+.pill-ok   { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.pill-off  { color: var(--dim); background: #0d1322; }
+.pill-bad  { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.pill-warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.pill-info { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+.t4 {
+  display: inline-flex; align-items: baseline; gap: .35rem;
+  font-size: .92rem; color: #7dd3fc;
+  border: 1px dashed #1e4d63; border-radius: 8px; padding: .18rem .5rem;
+}
+.t4.no { color: var(--dim); border-color: var(--line); }
+
+/* Шкала: скільки з'їдено і де стоїть ручне звіряння. */
+.gauge { height: 7px; border-radius: 4px; background: #0b1120; overflow: hidden; position: relative; }
+.gauge > i { display: block; height: 100%; background: var(--bk); transition: width .5s cubic-bezier(.4,0,.2,1); }
+/* Смужка «скільки періоду минуло» навмисно сіра: вона фон для квоти, а не
+   ще один показник — два кольорових рядки поруч читались би як конкуренти. */
+.gauge-pace > i { background: #3f4c66; }
+.gauge-row { display: grid; grid-template-columns: 4.6rem 1fr auto; align-items: center; gap: .5rem; font-size: .72rem; color: var(--muted); }
+.tick { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--warn); }
+
+.meta { font-size: .76rem; color: var(--dim); }
+.meta b { color: var(--muted); font-weight: 500; }
+
+/* ── таблиці ── */
+table { border-collapse: collapse; width: 100%; font-size: .8rem; }
+th { text-align: left; font-weight: 500; color: var(--dim); font-size: .7rem;
+     text-transform: uppercase; letter-spacing: .05em; padding: .3rem .55rem; }
+td { padding: .34rem .55rem; border-top: 1px solid var(--line-soft); }
+tbody tr:hover { background: #131a2b; }
+
+.bar { height: 5px; border-radius: 3px; background: #0b1120; overflow: hidden; min-width: 3.5rem; }
+.bar > i { display: block; height: 100%; background: var(--bk); }
+
+/* ── форми ── */
+input[type=number], input[type=text] {
+  width: 100%; background: #080d18; color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: .35rem .55rem; font-size: .84rem;
+}
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+label { font-size: .72rem; color: var(--muted); }
+
+/* ── дрібне ── */
+.toast-wrap { position: fixed; right: 1rem; bottom: 1rem; z-index: 50; display: grid; gap: .5rem; }
+.toast {
+  border: 1px solid var(--line); border-left: 3px solid var(--ok);
+  background: #101827; border-radius: 10px; padding: .55rem .8rem;
+  font-size: .82rem; box-shadow: 0 8px 30px #0006;
+  animation: slide .22s ease-out;
+}
+.toast.err { border-left-color: var(--bad); }
+@keyframes slide { from { opacity: 0; transform: translateY(6px); } }
+
+.skel { background: linear-gradient(90deg, #131a2b 25%, #1b2438 50%, #131a2b 75%);
+        background-size: 200% 100%; animation: sh 1.3s infinite; border-radius: 8px; }
+@keyframes sh { to { background-position: -200% 0; } }
+
+.spin { animation: rot 1s linear infinite; display: inline-block; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "▸ "; color: var(--dim); }
+details[open] > summary::before { content: "▾ "; }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap" style="padding-top:.6rem;padding-bottom:.6rem">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <div class="brand">gpurunner <span>· баланси</span></div>
+      <div class="flex items-center gap-2">
+        <span class="meta" id="freshness">завантаження…</span>
+        <button class="btn btn-ghost" id="toggle-off" title="Показати/сховати не налаштовані">
+          усі сервіси
+        </button>
+        <button class="btn btn-primary" id="refresh">
+          <span id="refresh-icon">↻</span> оновити <span class="kbd">R</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap space-y-4">
+
+  <!-- ── герой ─────────────────────────────────────────────────────────── -->
+  <section class="panel panel-pad">
+    <div class="flex flex-wrap items-start justify-between gap-6">
+      <div class="min-w-0">
+        <div class="tile-k">Загалом доступно</div>
+        <div class="hero-num num" id="total">—</div>
+        <div class="text-sm" style="color:var(--muted)">T4-годин обчислень</div>
+      </div>
+      <div class="flex flex-wrap gap-2" id="tiles"></div>
+    </div>
+
+    <div class="mt-5 space-y-2">
+      <div class="stack" id="stack"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="mt-4 pt-3 text-xs space-y-1" style="border-top:1px solid var(--line-soft);color:var(--dim)">
+      <div id="caveats"></div>
+      <div>
+        <b style="color:var(--muted)">●</b> множник спирається на вимір або опубліковану ціну ·
+        <b style="color:var(--muted)">◐</b> оцінка. Автопідрахунок витрат бачить
+        <b style="color:var(--muted)">лише прогони через gpurunner</b> — сесія з браузера для нього
+        не існує, тож залишок є верхньою межею. Розійшлось із вебом провайдера — тисни «звірити».
+      </div>
+    </div>
+  </section>
+
+  <!-- ── картки ────────────────────────────────────────────────────────── -->
+  <section class="cards" id="cards"></section>
+
+  <!-- ── прогони ───────────────────────────────────────────────────────── -->
+  <section class="panel panel-pad space-y-4">
+    <div class="flex items-baseline justify-between">
+      <h2 class="font-semibold">Зараз виконується</h2>
+      <span class="meta" id="active-count"></span>
+    </div>
+    <div id="active" class="meta">—</div>
+    <div id="lost"></div>
+
+    <div class="pt-2" style="border-top:1px solid var(--line-soft)">
+      <h2 class="font-semibold mb-2">Останні прогони</h2>
+      <div class="overflow-x-auto"><table id="recent"></table></div>
+    </div>
+  </section>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script>
+/* ═══ дрібні помічники ═══════════════════════════════════════════════════ */
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = (v, d = 1) => v === null || v === undefined || Number.isNaN(v)
+  ? "—" : Number(v).toLocaleString("uk-UA", { minimumFractionDigits: d, maximumFractionDigits: d });
+const pct = (a, b) => !b ? 0 : Math.max(0, Math.min(100, (a / b) * 100));
+const stamp = (s) => String(s || "").replace("T", " ").slice(0, 16);
+
+function toast(text, isError = false) {
+  const el = document.createElement("div");
+  el.className = "toast" + (isError ? " err" : "");
+  el.textContent = text;
+  $("#toasts").appendChild(el);
+  setTimeout(() => el.remove(), isError ? 6000 : 3000);
+}
+
+function humanLeft(iso) {
+  if (!iso) return { text: "не скидається", soon: false };
+  const h = (new Date(iso) - new Date()) / 36e5;
+  if (h <= 0) return { text: "скидається зараз", soon: true };
+  if (h < 24) return { text: `скидається через ${Math.round(h)} год`, soon: h < 12 };
+  return { text: `скидається через ${Math.round(h / 24)} дн`, soon: false };
+}
+
+function humanAgo(sec) {
+  if (sec === null || sec === undefined) return "";
+  if (sec < 60) return "щойно";
+  if (sec < 3600) return `${Math.round(sec / 60)} хв тому`;
+  return `${Math.round(sec / 3600)} год тому`;
+}
+
+/* ═══ спарклайн ══════════════════════════════════════════════════════════
+   Крапки рідкі й нерівномірні — вони пишуться лише при оновленні балансу.
+   Тому лінія без згладжування, а під нею явно сказано, скільки їх було. */
+const isFlat = (points) => new Set(points.map(p => p.v)).size <= 1;
+
+function spark(points, w = 260, h = 34) {
+  const ys = points.map(p => p.v);
+  if (ys.length < 2) return "";
+  const [lo, hi] = [Math.min(...ys), Math.max(...ys)];
+  // Баланс, що не рухався, — найчастіший випадок на свіжій БД. Заливка під
+  // такою лінією зафарбувала б півкартки й читалась як стовпчик, тобто як
+  // «щось велике», хоча повідомлення прямо протилежне: змін не було.
+  if (hi === lo) {
+    return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"
+                 style="width:100%;height:${h}px;display:block">
+      <line x1="0" y1="${h / 2}" x2="${w}" y2="${h / 2}" stroke="var(--bk)"
+            stroke-width="1.4" stroke-dasharray="3 4" opacity=".55"
+            vector-effect="non-scaling-stroke"/>
+    </svg>`;
+  }
+  const xs = points.map(p => new Date(p.ts).getTime());
+  const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
+  const sx = t => (x1 === x0 ? 0 : (t - x0) / (x1 - x0)) * w;
+  const sy = v => h - 3 - (hi === lo ? 0.5 : (v - lo) / (hi - lo)) * (h - 6);
+  const pts = points.map((p, i) => [sx(xs[i]), sy(p.v)]);
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+  const area = `${line}L${w},${h}L0,${h}Z`;
+  const last = pts[pts.length - 1];
+  const id = "g" + Math.random().toString(36).slice(2, 8);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"
+               style="width:100%;height:${h}px;display:block">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--bk)" stop-opacity=".28"/>
+      <stop offset="100%" stop-color="var(--bk)" stop-opacity="0"/>
+    </linearGradient></defs>
+    <path d="${area}" fill="url(#${id})"/>
+    <path d="${line}" fill="none" stroke="var(--bk)" stroke-width="1.6"
+          vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4" fill="var(--bk)"/>
+  </svg>`;
+}
+
+/* ═══ картка сервісу ═════════════════════════════════════════════════════ */
+const AUTH = {
+  "ok":              ["готовий", "pill-ok"],
+  "не налаштовано":  ["не налаштовано", "pill-off"],
+  "помилка":         ["помилка API", "pill-bad"],
+};
+
+/** Скільки квоти з'їдено ВСЬОГО за період.
+ *  Не те саме, що `used`: після ручного звіряння `used` рахується лише від
+ *  якоря, тож при ліміті 30, звірянні 26 і годині після нього `used` = 1, а
+ *  насправді з періоду пішло 5. Шкала мусить показувати друге. */
+function consumed(q) {
+  if (!q || q.allowance === null || q.remaining === null) return null;
+  return Math.max(0, q.allowance - q.remaining);
+}
+
+/** Темп витрати: скільки періоду минуло проти скільки квоти з'їдено.
+ *  Головне питання до тижневої квоти — не «скільки лишилось», а «чи вкладаюсь». */
+function pace(q) {
+  if (!q || !q.allowance || !q.next_reset || !q.period_start) return null;
+  const spent = consumed(q);
+  if (spent === null) return null;
+  const t0 = new Date(q.period_start), t1 = new Date(q.next_reset), now = new Date();
+  const elapsed = pct(now - t0, t1 - t0);
+  const burned = pct(spent, q.allowance);
+  const drift = burned - elapsed;
+  return {
+    elapsed, burned,
+    label: drift > 15 ? "витрачаєш швидше, ніж іде час"
+         : drift < -15 ? "запас іде з випередженням" : "темп рівний",
+    tone: drift > 15 ? "pill-warn" : drift < -15 ? "pill-ok" : "pill-info",
+  };
+}
+
+function card(s) {
+  const [authText, authCls] = AUTH[s.auth] ?? AUTH["помилка"];
+  const q = s.quota, t4 = s.t4;
+  const editable = s.source === "розрахунок" || (q && q.allowance !== null);
+  const reset = humanLeft(q && q.next_reset);
+  const p = pace(q);
+
+  const el = document.createElement("div");
+  el.className = "card" + (s.auth === "ok" ? "" : " off");
+  el.dataset.bk = s.backend;
+  el.innerHTML = `
+    <div class="flex items-start justify-between gap-2 mb-2">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="dot"></span>
+        <span class="card-title truncate">${esc(s.backend)}</span>
+      </div>
+      <span class="pill ${authCls}">${authText}</span>
+    </div>
+
+    <div class="flex items-end justify-between gap-3 flex-wrap">
+      <div>
+        <div class="big num ${s.available === null ? "none" : ""}">
+          ${s.available === null ? "—" : fmt(s.available, s.unit === "$" ? 2 : 1)}
+          ${s.available === null ? "" : `<span class="unit">${esc(s.unit)}</span>`}
+        </div>
+        <div class="meta">
+          ${s.source === "api" ? "залишок від API провайдера"
+            : s.source === "розрахунок" ? "розрахунок за журналом прогонів"
+            : "провайдер цифри не дає"}
+          ${s.spent !== null && s.spent !== undefined
+            ? ` · витрачено <b class="num">${fmt(s.spent, s.unit === "$" ? 2 : 1)} ${esc(s.unit)}</b>`
+            : ""}
+        </div>
+      </div>
+      <div class="${t4 ? "t4" : "t4 no"}"
+           title="${esc(t4 ? t4.explain : "курсу для цієї одиниці немає")}">
+        ${t4 ? `<span>${t4.confident ? "●" : "◐"}</span>
+                <span class="num" style="font-weight:600">${fmt(t4.hours)}</span>
+                <span style="font-size:.75rem;opacity:.75">T4-год</span>`
+             : `<span style="font-size:.78rem">не переводиться</span>`}
+      </div>
+    </div>
+
+    ${t4 && !t4.confident ? `<div class="meta mt-1.5" style="color:var(--warn);opacity:.8">
+      ◐ ${esc(t4.explain)}</div>` : ""}
+
+    ${s.spark && s.spark.length > 1 ? `<div class="mt-3">${spark(s.spark)}
+      <div class="meta" style="font-size:.68rem">${s.spark.length} замірів${
+        isFlat(s.spark) ? " · без змін" : ""}</div></div>` : ""}
+
+    ${q && q.allowance && consumed(q) !== null ? `
+      <div class="mt-3 space-y-1.5">
+        <div class="gauge-row">
+          <span>квота</span>
+          <div class="gauge">
+            <i style="width:${pct(consumed(q), q.allowance).toFixed(1)}%"></i>
+            ${q.anchor ? `<span class="tick" style="left:${pct(q.allowance - q.anchor.remaining, q.allowance).toFixed(1)}%"
+              title="ручне звіряння: тут почався відлік заново"></span>` : ""}
+          </div>
+          <span class="num">${fmt(consumed(q))}/${fmt(q.allowance, 0)}</span>
+        </div>
+        ${p ? `<div class="gauge-row">
+          <span>період</span>
+          <div class="gauge gauge-pace"><i style="width:${p.elapsed.toFixed(1)}%"></i></div>
+          <span class="num">${p.elapsed.toFixed(0)}%</span>
+        </div>` : ""}
+      </div>` : ""}
+
+    ${q && q.plans && q.plans.length > 1 ? `
+      <div class="mt-3 flex items-center gap-1.5 flex-wrap">
+        <span class="meta">тариф:</span>
+        ${q.plans.map(pl => `<button class="btn" data-plan="${esc(pl)}"
+          style="${pl === q.plan ? "border-color:var(--bk);color:var(--bk)" : ""}"
+          >${esc(pl)}</button>`).join("")}
+      </div>` : ""}
+
+    <div class="mt-3 flex flex-wrap items-center gap-1.5">
+      ${q ? `<span class="pill ${reset.soon ? "pill-warn" : "pill-off"}">${reset.text}</span>` : ""}
+      ${p ? `<span class="pill ${p.tone}">${p.label}</span>` : ""}
+      ${q && q.anchor ? `<span class="pill pill-warn" title="${esc(q.anchor.note || "")}">
+        звірено ${esc(stamp(q.anchor.ts))}</span>` : ""}
+      ${q && q.allowance_assumed ? `<span class="pill pill-off"
+        title="Число з плану провайдера, не з API. Постав своє — і позначка зникне.">ліміт — припущення</span>` : ""}
+      ${q && q.runs_counted && !q.exact_used ? `<span class="pill pill-off">частина часу оцінена</span>` : ""}
+      ${q && q.unconverted && q.unconverted.length ? `<span class="pill pill-bad">
+        не переведено: ${q.unconverted.map(esc).join(", ")}</span>` : ""}
+    </div>
+
+    ${q && q.runs_counted ? `<div class="meta mt-2">
+      витрачено <b class="num">${fmt(q.used)} ${esc(q.unit)}</b> за ${q.runs_counted} прогін(ів)
+      з ${esc(stamp(q.counted_since))}</div>` : ""}
+    ${s.detail ? `<div class="meta mt-1">${esc(s.detail)}</div>` : ""}
+    ${s.api_note ? `<div class="meta mt-1">API: ${esc(s.api_note)}</div>` : ""}
+
+    <div class="flex gap-1.5 mt-3">
+      ${editable ? `<button class="btn" data-act="edit">звірити</button>` : ""}
+      <button class="btn" data-act="details">розшифровка</button>
+      ${s.url ? `<a class="btn" href="${esc(s.url)}" target="_blank" rel="noreferrer">дашборд ↗</a>` : ""}
+    </div>
+
+    <form data-role="edit" hidden class="mt-3 pt-3 space-y-2" style="border-top:1px solid var(--line-soft)">
+      <label>залишок за даними провайдера (${esc(q ? q.unit : s.unit)})
+        <input name="remaining" type="number" step="any" min="0" required class="mt-1">
+      </label>
+      <label>нотатка
+        <input name="note" type="text" placeholder="звідки цифра" class="mt-1">
+      </label>
+      <div class="flex gap-1.5">
+        <button type="submit" class="btn btn-primary">зберегти</button>
+        <button type="button" class="btn" data-act="clear">прибрати звіряння</button>
+      </div>
+      <p class="meta" style="font-size:.7rem">
+        Стає новою точкою відліку: далі віднімаються лише прогони після неї.
+        Прогін, що йде саме зараз, зарахується частково — рівно тією частиною, що після звіряння.
+      </p>
+    </form>
+
+    <div data-role="details" hidden class="mt-3 pt-3 space-y-3" style="border-top:1px solid var(--line-soft)"></div>
+  `;
+
+  const form = $('[data-role="edit"]', el);
+  const details = $('[data-role="details"]', el);
+
+  $('[data-act="edit"]', el)?.addEventListener("click", () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) form.remaining.focus();
+  });
+  $('[data-act="details"]', el).addEventListener("click", async () => {
+    details.hidden = !details.hidden;
+    if (!details.hidden) await loadDetails(s.backend, details);
+  });
+  form?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const ok = await post(`/api/quota/${s.backend}`, {
+      remaining: Number(form.remaining.value), note: form.note.value || "",
+    });
+    if (ok) { toast(`${s.backend}: залишок звірено`); await load(true); }
+  });
+  $('[data-act="clear"]', el)?.addEventListener("click", async () => {
+    const r = await fetch(`/api/quota/${s.backend}/anchor`, { method: "DELETE" });
+    if (r.ok) { toast(`${s.backend}: повернуто автопідрахунок`); await load(true); }
+  });
+  el.querySelectorAll("[data-plan]").forEach(b => b.addEventListener("click", async () => {
+    if (b.dataset.plan === (q && q.plan)) return;
+    if (await post(`/api/quota/${s.backend}`, { plan: b.dataset.plan })) {
+      toast(`${s.backend}: тариф — ${b.dataset.plan}`);
+      await load(true);
+    }
+  }));
+  return el;
+}
+
+/* ═══ розшифровка ════════════════════════════════════════════════════════ */
+const SRC_TONE = {
+  "summary": "pill-ok", "журнал": "pill-info",
+  "з черги": "pill-warn", "триває": "pill-info", "загублений": "pill-off",
+};
+
+async function loadDetails(backend, box) {
+  box.innerHTML = `<div class="skel" style="height:5rem"></div>`;
+  let u, h;
+  try {
+    [u, h] = await Promise.all([
+      fetch(`/api/usage/${backend}`).then(r => r.json()),
+      fetch(`/api/history/${backend}`).then(r => r.json()),
+    ]);
+  } catch (e) {
+    box.innerHTML = `<div class="meta" style="color:var(--bad)">не вдалось: ${esc(e)}</div>`;
+    return;
+  }
+
+  const rows = (u.rows || []).map(r => `
+    <tr>
+      <td class="mono" style="color:var(--dim)">${esc(r.handle_id)}</td>
+      <td>${esc(r.job)}</td>
+      <td style="color:var(--muted)">${esc(r.gpu)}</td>
+      <td class="num">${fmt(r.hours, 2)}</td>
+      <td class="num" style="${r.converted ? "" : "color:var(--bad)"}">
+        ${r.converted ? fmt(r.charged, 2) : "?"}</td>
+      <td><span class="pill ${SRC_TONE[r.source] || "pill-off"}">${esc(r.source)}</span></td>
+    </tr>`).join("");
+
+  const points = (h.points || []).filter(p => p.available !== null)
+    .map(p => ({ ts: p.ts, v: p.available }));
+
+  box.innerHTML = `
+    <div class="meta">
+      рахується з <b>${esc(stamp(u.counted_since))}</b>
+      ${u.anchor ? "— від ручного звіряння" : "— від початку періоду"}
+    </div>
+    ${rows ? `<div class="overflow-x-auto"><table>
+        <thead><tr><th>id</th><th>job</th><th>gpu</th><th>год</th>
+          <th>списано</th><th>джерело часу</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+      : `<div class="meta">у цьому періоді прогонів не було</div>`}
+    ${points.length > 1
+      ? `<div><div class="tile-k mb-1">залишок у часі · ${points.length} замірів</div>
+           ${spark(points, 320, 60)}
+           <div class="flex justify-between meta" style="font-size:.66rem">
+             <span>${esc(stamp(points[0].ts))}</span>
+             <span>${esc(stamp(points[points.length - 1].ts))}</span></div></div>`
+      : `<div class="meta">історії ще немає — графік з'явиться після кількох оновлень</div>`}
+    ${(u.anchors || []).length ? `<details class="meta">
+      <summary>звірянь було: ${u.anchors.length}</summary>
+      <ul class="mt-1 space-y-0.5">${u.anchors.map(a =>
+        `<li>${esc(stamp(a.ts))} → <span class="num">${fmt(a.remaining)}</span>
+         ${a.note ? `· ${esc(a.note)}` : ""}</li>`).join("")}</ul></details>` : ""}
+  `;
+}
+
+/* ═══ прогони ════════════════════════════════════════════════════════════ */
+const ST = {
+  running: "pill-info", queued: "pill-off", completed: "pill-ok",
+  failed: "pill-bad", cancelled: "pill-warn", unknown: "pill-off",
+};
+// Смужка «скільки з вікна сесії з'їдено» має сенс лише там, де провайдер справді
+// обриває сесію сам (Kaggle і Colab — на 12-й годині). Малювати її для Vast чи
+// Modal означало б домалювати їм ліміт, якого в них немає.
+const SESSION_CAP_H = { kaggle: 12, colab: 12 };
+
+async function loadRuns() {
+  const data = await fetch("/api/runs").then(r => r.json());
+
+  $("#active-count").textContent = data.active.length
+    ? `${data.active.length} живих · ${(data.lost || []).length} загублених`
+    : `${(data.lost || []).length} загублених хендлів`;
+
+  $("#active").innerHTML = data.active.length ? `
+    <div class="overflow-x-auto"><table>
+      <thead><tr><th>id</th><th>backend</th><th>job</th><th>gpu</th>
+        <th>статус</th><th>іде</th><th style="width:8rem">вікно сесії</th></tr></thead>
+      <tbody>${data.active.map(r => `<tr data-bk="${esc(r.backend)}">
+        <td class="mono" style="color:var(--dim)">${esc(r.handle_id)}</td>
+        <td><span class="dot" style="margin-right:.35rem"></span>${esc(r.backend)}</td>
+        <td>${esc(r.job)}</td>
+        <td style="color:var(--muted)">${esc(r.gpu)}</td>
+        <td><span class="pill ${ST[r.status] || "pill-off"}">${esc(r.status)}</span></td>
+        <td class="num">${fmt(r.hours)} год</td>
+        <td>${SESSION_CAP_H[r.backend]
+          ? `<div class="bar" title="з ${SESSION_CAP_H[r.backend]} год сесії"><i
+               style="width:${pct(r.hours, SESSION_CAP_H[r.backend]).toFixed(0)}%"></i></div>`
+          : `<span style="color:var(--dim)">без ліміту</span>`}</td>
+      </tr>`).join("")}</tbody></table></div>`
+    : `<span style="color:var(--dim)">нічого не виконується</span>`;
+
+  // «Загублені» — нетермінальні хендли, яких давно не опитували. Кернел за ними
+  // майже напевно давно помер; у витрати вони не входять, і тримати їх поруч із
+  // живими прогонами означало б ховати другі за першими.
+  const lost = data.lost || [];
+  $("#lost").innerHTML = lost.length ? `
+    <details>
+      <summary class="meta">загублених хендлів: ${lost.length} — статус не оновлювався
+        понад 6 год, у витраті не враховані</summary>
+      <div class="overflow-x-auto mt-2"><table>
+        <thead><tr><th>id</th><th>backend</th><th>job</th><th>статус</th>
+          <th>востаннє бачили</th></tr></thead>
+        <tbody>${lost.map(r => `<tr style="color:var(--dim)">
+          <td class="mono">${esc(r.handle_id)}</td><td>${esc(r.backend)}</td>
+          <td>${esc(r.job)}</td><td>${esc(r.status)}</td>
+          <td>${esc(stamp(r.last_seen))}</td></tr>`).join("")}</tbody></table></div>
+      <p class="meta mt-2" style="font-size:.7rem">
+        Прибрати з очей: <code class="mono">gpurunner status &lt;id&gt;</code> оновить статус,
+        <code class="mono">gpurunner cancel --all-running</code> закриє гуртом.</p>
+    </details>` : "";
+
+  $("#recent").innerHTML = `
+    <thead><tr><th>id</th><th>backend</th><th>job</th><th>gpu</th>
+      <th>статус</th><th>подано</th><th>помилка</th></tr></thead>
+    <tbody>${data.recent.map(r => `<tr data-bk="${esc(r.backend)}">
+      <td class="mono" style="color:var(--dim)">${esc(r.handle_id)}</td>
+      <td><span class="dot" style="margin-right:.35rem"></span>${esc(r.backend)}</td>
+      <td>${esc(r.job)}</td><td style="color:var(--muted)">${esc(r.gpu)}</td>
+      <td><span class="pill ${ST[r.status] || "pill-off"}">${esc(r.status)}</span></td>
+      <td style="color:var(--dim)">${esc(stamp(r.created))}</td>
+      <td style="color:var(--bad);font-size:.72rem">${esc(r.error || "")}</td>
+    </tr>`).join("")}</tbody>`;
+}
+
+/* ═══ головне ════════════════════════════════════════════════════════════ */
+let showOffline = true;
+let lastFetchedAt = null;
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = r.status;
+    try { detail = (await r.json()).detail ?? detail; } catch { /* тіло не json */ }
+    toast(`Не збереглось: ${detail}`, true);
+    return false;
+  }
+  return true;
+}
+
+function renderHero(data) {
+  const t = data.total;
+  $("#total").textContent = fmt(t.t4_hours);
+
+  const measured = t.t4_hours - t.estimated_t4_hours;
+  const withT4 = data.services.filter(s => s.t4 && s.t4.hours > 0)
+    .sort((a, b) => b.t4.hours - a.t4.hours);
+  const best = withT4[0];
+
+  $("#tiles").innerHTML = `
+    <div class="tile"><div class="tile-k">вимір</div>
+      <div class="tile-v num" style="color:var(--ok)">${fmt(measured)}</div></div>
+    <div class="tile"><div class="tile-k">оцінка</div>
+      <div class="tile-v num" style="color:var(--warn)">${fmt(t.estimated_t4_hours)}</div></div>
+    ${best ? `<div class="tile" data-bk="${esc(best.backend)}">
+      <div class="tile-k">найбільше вільно</div>
+      <div class="tile-v" style="color:var(--bk)">${esc(best.backend)}</div></div>` : ""}
+    <div class="tile"><div class="tile-k">сервісів готово</div>
+      <div class="tile-v num">${data.services.filter(s => s.auth === "ok").length}<span
+        style="color:var(--dim);font-size:.9rem">/${data.services.length}</span></div></div>`;
+
+  $("#stack").innerHTML = withT4.map(s =>
+    `<i data-bk="${esc(s.backend)}" class="${s.t4.confident ? "" : "est"}"
+        style="flex:${s.t4.hours.toFixed(3)} 0 0"
+        title="${esc(s.backend)}: ${fmt(s.t4.hours)} T4-год"></i>`).join("");
+
+  $("#legend").innerHTML = withT4.map(s =>
+    `<span data-bk="${esc(s.backend)}" class="flex items-center gap-1.5">
+      <span class="dot"></span>${esc(s.backend)}
+      <b class="num">${fmt(s.t4.hours)}</b>${s.t4.confident ? "" : " ◐"}</span>`).join("")
+    || `<span>жоден залишок поки не переводиться в T4-години</span>`;
+
+  const bits = [];
+  if (t.unconverted.length) {
+    bits.push(`не переведено: ` + t.unconverted
+      .map(u => `<b style="color:var(--muted)">${esc(u.backend)} ${fmt(u.available)} ${esc(u.unit)}</b>`)
+      .join(", "));
+  }
+  if (t.needs_factor?.length) {
+    bits.push(`без множника до T4: ${t.needs_factor.map(esc).join(", ")} — ` +
+      `постав свій через <code class="mono">POST /api/factors/&lt;gpu&gt;</code>, ` +
+      `паспортні TFLOPS для цих карт брешуть`);
+  }
+  $("#caveats").innerHTML = bits.join(" · ");
+}
+
+function renderCards(data) {
+  const box = $("#cards");
+  box.innerHTML = "";
+  const list = data.services
+    .filter(s => showOffline || s.auth === "ok")
+    .sort((a, b) => (b.t4?.hours ?? -1) - (a.t4?.hours ?? -1));
+  if (!list.length) { box.innerHTML = `<div class="meta">нічого показувати</div>`; return; }
+  list.forEach(s => box.appendChild(card(s)));
+}
+
+function tickFreshness() {
+  if (lastFetchedAt === null) return;
+  const age = (Date.now() - lastFetchedAt) / 1000;
+  $("#freshness").textContent = `дані ${humanAgo(age)}`;
+}
+
+async function load(force = false) {
+  const btn = $("#refresh"), icon = $("#refresh-icon");
+  btn.disabled = true; icon.className = "spin";
+  $("#freshness").textContent = force ? "опитую бекенди…" : "завантаження…";
+  if (!$("#cards").children.length) {
+    $("#cards").innerHTML = Array.from({ length: 4 },
+      () => `<div class="skel" style="height:14rem"></div>`).join("");
+  }
+  try {
+    const data = await fetch(force ? "/api/refresh" : "/api/overview",
+      force ? { method: "POST" } : undefined).then(r => r.json());
+    if (data.error) { toast(data.error, true); $("#freshness").textContent = "помилка"; return; }
+    renderHero(data);
+    renderCards(data);
+    lastFetchedAt = Date.now() - (data.cache_age_s || 0) * 1000;
+    tickFreshness();
+    await loadRuns();
+  } catch (e) {
+    toast(`Не вдалось завантажити: ${e}`, true);
+    $("#freshness").textContent = "офлайн";
+  } finally {
+    btn.disabled = false; icon.className = "";
+  }
+}
+
+$("#refresh").addEventListener("click", () => load(true));
+$("#toggle-off").addEventListener("click", (e) => {
+  showOffline = !showOffline;
+  e.target.textContent = showOffline ? "усі сервіси" : "лише готові";
+  fetch("/api/overview").then(r => r.json()).then(renderCards);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, textarea")) return;
+  if (e.key === "r" || e.key === "R" || e.key === "к" || e.key === "К") load(true);
+});
+setInterval(tickFreshness, 15000);
+load();
+</script>
+</body>
+</html>
