@@ -1,0 +1,151 @@
+name: Release
+
+# Тег `v*` — єдиний тригер. Усе, що нижче, існує заради одного факту: колесо на
+# PyPI не видаляється, а номер версії не перевикористовується. Тому тег,
+# поставлений на червоне дерево, мусить зупинитись ДО публікації.
+on:
+  push:
+    tags: ["v*"]
+
+# 🔴 Один тег — один прогін. 21.09.2026 на `v0.2.2` GitHub підняв ДВА, і
+# обидва дійшли до викладки: того разу обійшлось, але колесо на PyPI не
+# перезаписується, тож у гонці другий падає з «already exists» — тобто реліз
+# червоніє вже ПІСЛЯ того, як пакет опубліковано, і причина цього не видно
+# ніде, крім логів. `cancel-in-progress` тут НЕ ставимо: скасувати прогін,
+# який цієї секунди качає на PyPI, гірше за зайве очікування.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  private-data:
+    name: приватні дані
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python tools/scan_private.py
+      # 🔴 Перевіряємо історію ТЕГА — рівно те, що поїде людям, і нічого
+      # більше. `--history` тут не годиться: він сканує `--all`, а checkout із
+      # `fetch-depth: 0` притягує всі гілки origin, серед них приватну історію
+      # розробки, яку ми свідомо не публікуємо (рішення 21.09.2026 — вона
+      # заражена від кореневого коміта, і публікація йде з чистого кореня).
+      # Ворота, які завжди червоні, вимикають — і тоді вони не ловлять нічого.
+      - name: історія, яку публікуємо
+        env:
+          GPURUNNER_PUBLIC_REF: ${{ github.ref_name }}
+        run: python tools/scan_private.py --public
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  checks:
+    name: ворота якості
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: встановити
+        run: uv sync --locked --group dev --extra all
+      - name: ruff
+        run: uv run ruff check .
+      - name: mypy
+        run: uv run mypy src
+      - name: pytest
+        run: uv run pytest
+      - name: журнал версії є
+        run: python tools/release_notes.py "${GITHUB_REF_NAME}" > /dev/null
+
+  build:
+    name: зібрати
+    needs: [private-data, checks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: uv build
+        run: uv build
+      - name: ім'я й версія колеса == тег
+        # ⚠ Дистрибутив зветься `gpuhire` (ім'я `gpurunner` на PyPI зайняв
+        # схожий проєкт), а команда й модуль лишились `gpurunner`. Ім'я
+        # перевіряємо окремо: мовчазне перейменування дистрибутива — це
+        # публікація не в той проєкт, і скасувати її вже не можна.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          whl=$(basename dist/*.whl)
+          name=$(echo "$whl" | cut -d- -f1)
+          got=$(echo "$whl" | cut -d- -f2)
+          test "$name" = "gpuhire" || { echo "колесо зветься $name, а не gpuhire"; exit 1; }
+          test "$tag" = "$got" || { echo "тег $tag ≠ версія колеса $got"; exit 1; }
+          echo "колесо збігається: $whl"
+      - name: у sdist немає зайвого
+        run: |
+          tar -tzf dist/*.tar.gz > /tmp/sdist.txt
+          ! grep -E "/(CLAUDE\.md|data/|\.claude/|tools/)" /tmp/sdist.txt
+      - name: колесо ставиться й запускається
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install --upgrade pip
+          /tmp/clean/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/gpurunner --version
+          /tmp/clean/bin/gpurunner ls
+          /tmp/clean/bin/gpurunner boxes ls
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    name: PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # 🔴 Trusted Publishing (OIDC), а не токен у секретах: довготривалий токен
+    # PyPI в репозиторії — це право публікувати від імені проєкту для кожного,
+    # хто колись прочитає секрети.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: сторінка релізу
+    # після `pypi`: сторінка обіцяє `pip install`, тож колесо має вже лежати
+    needs: [build, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - name: текст релізу з журналу
+        run: python tools/release_notes.py "${GITHUB_REF_NAME}" > /tmp/notes.md
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: /tmp/notes.md
+          files: dist/*

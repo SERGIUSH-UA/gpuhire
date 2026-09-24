@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# Build
+build/
+dist/
+*.whl
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project: local scratch
+/tmp/
+/scratch/
+/examples/_out/
+/examples/*_out/
+
+# Project: never commit credentials, even if accidentally dropped here
+**/kaggle.json
+**/access_token
+.modal.toml
+.env
+.env.local
+e2e_modal_out/
+e2e_out/
+
+# Артефакти прогонів (2026-07-29). `out/<job-id>/` — вивід fetch'а по кожному
+# job'у, `.scratch/` — робочі теки датасетів; і те, й те відтворюване і росте
+# без обмежень (1400+ файлів на момент правила). У git — тільки код.
+/out/
+/.scratch/
+*.log
+to_stop.txt
+
+# 🔴 Логи прогонів у корені. Наглядач із 19.08 пише свій лог у data_dir(),
+# але ручні запуски й далі лишають файли тут — а вони накопичуються роками
+# (травневі sweep_v*.log дожили до вересня й не значили вже нічого).
+*.log
+*.err
+/phase.txt
+/to_stop.txt
+
+# Реєстр боксів і калібрування — дані користувача, не пакета (див. config.registry_dir)
+/data/

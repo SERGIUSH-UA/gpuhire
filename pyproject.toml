@@ -1,0 +1,201 @@
+[project]
+# 🔴 Ім'я НА PyPI — `gpuhire`, а команда, пакет і репозиторій лишаються
+# `gpurunner`. Причина не в смаку: PyPI відмовив у назві `gpurunner` як надто
+# схожій на наявний `gpu-runner` (0.0.7, «Run a command requiring GPU
+# resources») — захист від typosquatting дивиться не на точний збіг, а на
+# схожість. Перейменовувати код заради цього було б гірше: `gpurunner` стоїть
+# у документації, у скілах Нишпорки, в `NYSH_GPURUNNER` і в сотнях рядків
+# заходів, а людина в терміналі однаково набирає команду, а не ім'я колеса.
+name = "gpuhire"
+# 🔴 Версія живе в ОДНОМУ місці — `src/gpurunner/__init__.py`. Поки вона стояла і
+# тут, і там, ніщо не тримало їх рівними: `gpurunner --version` друкує
+# `__version__`, а `pip show` — метадані колеса.
+dynamic = ["version"]
+description = "Один CLI для GPU-задач на Kaggle, Modal, Colab, Vast, Lightning, Beam і Saturn: подати, стежити, забрати, не переплатити"
+readme = "README.md"
+# Нижня межа — як у `nyshporka`, яка тягне цей пакет через extra `rent`: вужча
+# межа тут робила б той extra невстановлюваним на її 3.11.
+requires-python = ">=3.11"
+authors = [{ name = "Serhii Dalishchynskyi" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["gpu", "kaggle", "modal", "colab", "vast", "ocr", "htr", "batch", "rental"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: Ukrainian",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.6",
+    "httpx>=0.27",
+    "kaggle>=1.6",
+    "nbformat>=5.10",
+    "platformdirs>=4.2",
+    # 🔴 Не «зручність»: на Windows `os.kill(pid, 0)` — це TerminateProcess, а
+    # не перевірка (CPython), тож без psutil живість наглядача там визначити
+    # нічим. Саме на цьому стоїть `supervisor_alive`, а хибний вердикт
+    # «ЗАХІД ОБІРВАНО» коштував дванадцяти сесій підказки «перезапустити», тобто
+    # другої оренди за ту саму роботу. Пакет був у venv транзитивно й ЗНИК на
+    # першому ж `uv sync` — саме тому він тепер оголошений явно.
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+modal = ["modal>=0.64"]
+colab = ["google-api-python-client>=2.130", "google-auth-oauthlib>=1.2"]
+vast = ["paramiko>=3.4"]
+lightning = ["lightning-sdk>=2026.7"]
+beam = ["beam-client>=0.2.200"]
+saturn = ["saturn-client>=2026.2", "saturnfs>=2024.3"]
+web = ["fastapi>=0.115", "uvicorn>=0.30"]
+# Канал доставки кадрів на орендовану машину: R2 + presigned. Pillow — лише
+# заголовки JPEG, щоб порахувати площу кадру (вона визначає VRAM на шард).
+r2 = ["boto3>=1.34", "pillow>=10.0"]
+# Усе разом. Без `lightning`, `beam`, `saturn`: їхні SDK тягнуть важкі й
+# конфліктні залежності, а потрібні вони одиницям — ставляться поіменно.
+all = [
+    "gpuhire[modal]",
+    "gpuhire[colab]",
+    "gpuhire[vast]",
+    "gpuhire[web]",
+    "gpuhire[r2]",
+]
+
+[project.urls]
+Homepage = "https://github.com/SERGIUSH-UA/gpuhire"
+Source = "https://github.com/SERGIUSH-UA/gpuhire"
+Issues = "https://github.com/SERGIUSH-UA/gpuhire/issues"
+Changelog = "https://github.com/SERGIUSH-UA/gpuhire/blob/main/CHANGELOG.md"
+
+[project.scripts]
+gpurunner = "gpurunner.cli:app"
+
+# Бекенд оренди для Нишпорки (`nyshporka.cloud.registry` вантажить цю групу).
+# Сама Нишпорка НЕ є залежністю: плагін вантажить лише вона, тож у робочому
+# шляху вона є за побудовою, а gpurunner без неї працює як раніше.
+[project.entry-points."nyshporka.cloud"]
+vast = "gpurunner.plugins.nyshporka_cloud:VastRent"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/gpurunner/__init__.py"
+
+# 🔴 Без `force-include`. `packages` уже кладе в колесо ВСЕ з теки пакета, зокрема
+# `web/static` і раннери `_embedded`; примусове включення тих самих шляхів дає
+# «A second file is being added to the wheel archive» — і колесо не збирається
+# взагалі. Приймач: крок «колесо ставиться й запускається» в release.yml.
+[tool.hatch.build.targets.wheel]
+packages = ["src/gpurunner"]
+
+# 🔴 Перелік явний. Без нього hatchling кладе в sdist усе, чого немає в
+# `.gitignore`, — тобто й агентські нотатки, і будь-який файл, забутий у корені.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/examples",
+    "/docs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "E501",  # line-length handled by formatter
+    # RUF001/2/3 flag Cyrillic letters that look like Latin ones — a homoglyph
+    # defence for code that is supposed to be ASCII. This project documents
+    # itself in Ukrainian on purpose, so the rule fired 824 times and buried
+    # every real finding: `ruff check` was 88% noise and therefore useless.
+    # Identifiers stay ASCII; only comments, docstrings and user-facing strings
+    # are Ukrainian, and those cannot be attacked this way.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Embedded runners are neither standalone nor run on *our* interpreter.
+#
+# F821: the renderer concatenates `_embedded/_common.py` in front of a runner
+# before shipping it, so the shared helpers (_utc_iso, _dataset_root, _norm) are
+# legitimately undefined when the file is read on its own. The assembled code IS
+# checked — tests/test_render_all_jobs.py::test_rendered_code_has_no_undefined_names.
+#
+# UP/B905: this code executes on whatever Python the backend provides (Kaggle,
+# Colab, a Vast container image), not on our 3.12. `datetime.UTC` (UP017) is
+# 3.11+ and `zip(strict=)` (B905) is 3.10+, so "modernising" a runner here can
+# break it remotely — and it would fail three minutes into a paid GPU session.
+#
+# E702/E741/SIM105: runner code is dense numeric glue where `synchronize(); t += …`
+# on one line keeps a profiling block readable, `l` means "line", and a bare
+# try/except around a best-effort diagnostic is deliberately not worth importing
+# contextlib for. Style opinions here cost more than they return.
+"src/gpurunner/_embedded/*" = ["F821", "UP", "B905", "E702", "E741", "SIM105"]
+
+# typer's whole API is `def cmd(x: int = typer.Option(...))`. B008 exists for
+# mutable defaults; here it fires on every single CLI parameter and "fixing" it
+# would mean not using typer.
+"src/gpurunner/cli.py" = ["B008"]
+
+# Same story one layer up: FastAPI declares request bodies as
+# `body: dict = Body(...)`. The call in the default *is* the framework's API.
+"src/gpurunner/web/app.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+# Backend SDKs (kaggle, modal, lightning_sdk, beam, saturn, torch, PIL…) ship no
+# type information, and every optional extra is absent unless its `uv sync
+# --extra` was the last one run. Without this, 109 of 169 errors were "cannot
+# find implementation" for packages that are supposed to be optional.
+ignore_missing_imports = true
+# Embedded runners are shipped as source and assembled with `_common.py` in
+# front of them (see the runner-pattern section of CLAUDE.md), so on their own
+# they reference names that do not exist yet, and they import torch/PIL that we
+# deliberately do not install locally. Their contract is checked by
+# tests/test_render_all_jobs.py against the ASSEMBLED code, which is the only
+# form that ever runs.
+exclude = ["^src/gpurunner/_embedded/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Повний пак — паралельно, файл цілком на одному воркері; вузол чи один файл
+# воркерів не стартує (хук у tests/conftest.py).
+addopts = "-ra --strict-markers -n auto --dist loadfile"
+# Завислий тест падає за 2 хв зі стеком усіх потоків, а не тримає пак до
+# зовнішнього таймауту (23.09.2026: 10 хв на одному тесті в циклі очікування).
+# Довшому тесту — `@pytest.mark.timeout(N)`.
+timeout = 120
+asyncio_mode = "auto"
