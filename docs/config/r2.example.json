@@ -1,0 +1,6 @@
+{
+ "CLOUDFLARE_ACCOUNT_ID": "<ідентифікатор акаунта Cloudflare>",
+ "R2_ACCESS_KEY_ID": "<ключ доступу токена R2>",
+ "R2_SECRET_ACCESS_KEY": "<секрет токена R2>",
+ "R2_BUCKET": "<ваш бакет>"
+}
